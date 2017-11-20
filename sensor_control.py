@@ -39,12 +39,14 @@ username = credentials['username']
 password = credentials['password']
 
 #connect to server and generate csv file
-filename_csv = '/opt/webapps/sensor_surveillance/data/sc_data.csv'
-cmd_create_csv = 'mkdir -p /opt/webapps/sensor_surveillance/data; rm -f /opt/webapps/sensor_surveillance/data; echo time\;photo_current\;laser_current\;date >' + filename_csv
+filename_all_data='/opt/webapps/sensor_surveillance/data/sc_all_data.csv' #this file will contain all data
+filename_new_data='/opt/webapps/sensor_surveillance/data/sc_new_data.csv' #this file will contain the newest data for streaming it
+cmd_create_csv = 'mkdir -p /opt/webapps/sensor_surveillance/data; rm -f /opt/webapps/sensor_surveillance/data; echo time\;photo_current\;laser_current\;date >'
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect(server, port=port, username=username, password=password,timeout=10)
-ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_create_csv)
+ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_create_csv+filename_all_data)
+ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_create_csv+filename_new_data)
 
 #Dictionary with commands to control the sensor electronics
 commands = {'set laser off': b'\r0108W030000085C6\n',
@@ -69,19 +71,20 @@ f_laser.toolbar.logo = None
 
 #initialize port and read the photocurrent
 def read_value():
-    ports=comports()
-    for port in ports:
-        if str(port[1])==port_name:
-            ser = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
-    #read photo_current        
-    ser.write(commands['get photo current'])
-    photo_current=int(ser.read(18)[8:13].decode('ascii')) #8:13 contains value
-    sleep(0.1)
-    #read laser current
-    ser.write(commands['get laser current'])
-    laser_current=int(ser.read(18)[8:13].decode('ascii'))
-#    laser_current = 1
-    ser.close()
+#    ports=comports()
+#    for port in ports:
+#        if str(port[1])==port_name:
+#            ser = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
+#    #read photo_current        
+#    ser.write(commands['get photo current'])
+#    photo_current=int(ser.read(18)[8:13].decode('ascii')) #8:13 contains value
+#    sleep(0.1)
+#    #read laser current
+#    ser.write(commands['get laser current'])
+#    laser_current=int(ser.read(18)[8:13].decode('ascii'))
+#    ser.close()
+    photo_current=1
+    laser_current=1
     return photo_current, laser_current
 
 #create function to switch laser on and off
@@ -119,10 +122,16 @@ def update():
     new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')])
     source.stream(new_data)#,rollover=400) #how many glyphs/circles are kept in plot
     
-    #append new data to csv
-    cmd_append_csv = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_csv
-    ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_append_csv)
+    #update new data in csv
+    cmd_update_header='echo time\;photo_current\;laser_current\;date >' + filename_new_data
+    ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_update_header)
+    cmd_update_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_new_data
+    ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_update_data)
     
+    #store all data in anoter csv
+    cmd_store_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_all_data
+    ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_store_data)
+                                                         
 #create glyphs
 #f.circle(x='time', y='photo_current', color='firebrick', line_color=None, size=8, fill_alpha=0.4, source=source)
 f_photo.circle(x='time', y='photo_current', size=10, line_color='gray', fill_color='gray', line_alpha=1, fill_alpha=0.3, source=source)
