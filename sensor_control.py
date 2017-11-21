@@ -9,7 +9,7 @@ import serial
 from serial.tools.list_ports import comports
 from bokeh.io import curdoc
 from bokeh.models import PanTool, ResetTool, WheelZoomTool, SaveTool, HoverTool, ColumnDataSource
-from bokeh.models.widgets import RadioButtonGroup, Button, Slider
+from bokeh.models.widgets import RadioButtonGroup, Button, Slider, Dropdown
 from bokeh.models.callbacks import CustomJS
 from bokeh.layouts import layout
 from bokeh.plotting import figure
@@ -26,7 +26,7 @@ import pandas as pd
 start_time = time()
 
 #create columndatasource
-source = ColumnDataSource(dict(time=[], photo_current=[], laser_current=[], date=[]))
+source = ColumnDataSource(dict(time=[], photo_current=[], laser_current=[], temperature=[], date=[], selected_data=[]))
 
 #connect to port
 port_name = 'USB Serial Port (COM3)'
@@ -41,7 +41,7 @@ password = credentials['password']
 #connect to server and generate csv file
 filename_all_data='/opt/webapps/sensor_surveillance/data/sc_all_data.csv' #this file will contain all data
 filename_new_data='/opt/webapps/sensor_surveillance/data/sc_new_data.csv' #this file will contain the newest data for streaming it
-cmd_create_csv = 'mkdir -p /opt/webapps/sensor_surveillance/data; rm -f /opt/webapps/sensor_surveillance/data; echo time\;photo_current\;laser_current\;date >'
+cmd_create_csv = 'mkdir -p /opt/webapps/sensor_surveillance/data; rm -f /opt/webapps/sensor_surveillance/data; echo time\;photo_current\;laser_current\;temperature\;date >'
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 ssh.connect(server, port=port, username=username, password=password,timeout=10)
@@ -61,13 +61,11 @@ f_photo = figure(tools=[PanTool(), WheelZoomTool(), ResetTool(), SaveTool()],out
 hover=HoverTool(tooltips=[('Date', '@date')])
 f_photo.add_tools(hover)
 f_photo.toolbar.logo = None
-#f_photo.output_backend = 'svg'
 
 f_laser = figure(tools=[PanTool(), WheelZoomTool(), ResetTool(), SaveTool()],output_backend='webgl')
 hover=HoverTool(tooltips=[('Date', '@date')])
 f_laser.add_tools(hover)
 f_laser.toolbar.logo = None
-#f_laser.output_backend = 'svg'
 
 #initialize port and read the photocurrent
 def read_value():
@@ -119,24 +117,36 @@ def calc_crc16modbus(check_str):
 def update():
     dt = time() - start_time
     photo_current, laser_current = read_value()
-    new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')])
+    if dropdown.value=='temperature':
+        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[25], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[25])
+    elif dropdown.value=='laser_current':
+        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[25], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[laser_current])
     source.stream(new_data)#,rollover=400) #how many glyphs/circles are kept in plot
     
     #update new data in csv
-    cmd_update_header='echo time\;photo_current\;laser_current\;date >' + filename_new_data
+    cmd_update_header='echo time\;photo_current\;laser_current\;temperature\;date >' + filename_new_data
     ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_update_header)
-    cmd_update_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_new_data
+    cmd_update_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['temperature'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_new_data
     ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_update_data)
     
-    #store all data in anoter csv
-    cmd_store_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_all_data
+    #store all data in another csv
+    cmd_store_data = 'echo  '+'{:.2f}'.format(source.data['time'][-1])+'\;'+str(source.data['photo_current'][-1])+'\;'+str(source.data['laser_current'][-1])+'\;'+str(source.data['temperature'][-1])+'\;'+str(source.data['date'][-1])+' >> ' + filename_all_data
     ssh_stdin, ssh_stdout, ssh_stderr = ssh.exec_command(cmd_store_data)
                                                          
+def update_plot(attr, old, new): 
+    #change yaxis label and reset data
+    if dropdown.value=='laser_current':
+        f_laser.yaxis.axis_label='Laser Current'
+        source.data['selected_data']= source.data['laser_current'][:]
+    elif dropdown.value=='temperature':
+        f_laser.yaxis.axis_label='Temp. in (\u2103)'
+        source.data['selected_data']= source.data['temperature'][:]
+
 #create glyphs
 #f.circle(x='time', y='photo_current', color='firebrick', line_color=None, size=8, fill_alpha=0.4, source=source)
 f_photo.circle(x='time', y='photo_current', size=10, line_color='gray', fill_color='gray', line_alpha=1, fill_alpha=0.3, source=source)
 
-f_laser.circle(x='time', y='laser_current', size=10, line_color='firebrick', fill_color='firebrick', line_alpha=1, fill_alpha=0.3, source=source)
+f_laser.circle(x='time', y='selected_data', size=10, line_color='firebrick', fill_color='firebrick', line_alpha=1, fill_alpha=0.3, source=source)
 
 #Style the plot area
 f_photo.plot_width = 900
@@ -165,7 +175,7 @@ f_photo.axis.major_label_text_font_style = 'normal'
 f_laser.axis.minor_tick_line_color='black'
 f_laser.axis.minor_tick_in=-6
 f_laser.xaxis.axis_label='Time in (s)'
-f_laser.yaxis.axis_label='Laser Current'
+f_laser.yaxis.axis_label='Temp. in (\u2103)'
 f_laser.axis.axis_label_text_color=(0.7,0.7,0.7)
 f_laser.axis.major_label_text_color=(0.7,0.7,0.7)
 f_laser.axis.axis_label_text_font = 'helvetica'
@@ -205,7 +215,7 @@ slider.on_change('value', laser_power)
 button = Button(label='Export data', button_type='danger')
 js_download = """
 var csv = source.get('data');
-var filetext = 'time;photo_current;laser_current;date\\n';
+var filetext = 'time;photo_current;laser_current;temperature;date;selected_data\\n';
 for (i=0; i < csv['date'].length; i++) {
     var currRow = [csv['time'][i].toString(),
                    csv['photo_current'][i].toString(),
@@ -235,7 +245,12 @@ if (link.download !== undefined) { // feature detection
 }"""
 button.callback = CustomJS(args=dict(source=source), code=js_download)
 
+#Create dropdown button for auxilary data
+menu = [("Temperature", "temperature"), ("Laser current", "laser_current")]
+dropdown = Dropdown(label="Select data", button_type="danger", menu=menu, value='temperature')
+dropdown.on_change('value',update_plot)
+
 #add figure to curdoc and configure callback
-lay_out=layout([[radio_button_group, slider],[f_photo],[f_laser],[button]])
+lay_out=layout([[radio_button_group, slider],[f_photo],[f_laser],[button, dropdown]])
 curdoc().add_root(lay_out)
 curdoc().add_periodic_callback(update,1000) #updates each 1000ms
