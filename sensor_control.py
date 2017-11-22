@@ -19,6 +19,7 @@ from pytz import timezone
 from PyCRC.CRC16 import CRC16
 import paramiko
 import pandas as pd
+from numpy import nan
 
 #bokeh serve --allow-websocket-origin=localhost:5000 sensor_control.py
 
@@ -28,8 +29,9 @@ start_time = time()
 #create columndatasource
 source = ColumnDataSource(dict(time=[], photo_current=[], laser_current=[], temperature=[], date=[], selected_data=[]))
 
-#connect to port
-port_name = 'USB Serial Port (COM3)'
+#define portnames
+portname_sensor = 'USB Serial Port (COM3)'
+portname_temperature='USB-SERIAL CH340 (COM5)'
 
 #host credentials
 credentials=pd.read_json(r'./credentials.JSON', typ='series')
@@ -62,34 +64,54 @@ hover=HoverTool(tooltips=[('Date', '@date')])
 f_photo.add_tools(hover)
 f_photo.toolbar.logo = None
 
-f_laser = figure(tools=[PanTool(), WheelZoomTool(), ResetTool(), SaveTool()],output_backend='webgl')
+f_aux = figure(tools=[PanTool(), WheelZoomTool(), ResetTool(), SaveTool()],output_backend='webgl')
 hover=HoverTool(tooltips=[('Date', '@date')])
-f_laser.add_tools(hover)
-f_laser.toolbar.logo = None
+f_aux.add_tools(hover)
+f_aux.toolbar.logo = None
 
 #initialize port and read the photocurrent
 def read_value():
-#    ports=comports()
-#    for port in ports:
-#        if str(port[1])==port_name:
-#            ser = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
-#    #read photo_current        
-#    ser.write(commands['get photo current'])
-#    photo_current=int(ser.read(18)[8:13].decode('ascii')) #8:13 contains value
-#    sleep(0.1)
-#    #read laser current
-#    ser.write(commands['get laser current'])
-#    laser_current=int(ser.read(18)[8:13].decode('ascii'))
-#    ser.close()
-    photo_current=1
-    laser_current=1
-    return photo_current, laser_current
+#   open ports
+    ports=comports()
+    for port in ports:
+        if str(port[1])==portname_sensor:
+            ser_sensor = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
+        if str(port[1]==portname_temperature):
+            ser_temperature = serial.Serial(str(port[0]),baudrate=115200,timeout=500)
+
+#   read photo_current        
+    ser_sensor.write(commands['get photo current'])
+    photo_current=int(ser_sensor.read(18)[8:13].decode('ascii')) #8:13 contains value
+
+    sleep(0.1)
+    
+#   read laser current
+    ser_sensor.write(commands['get laser current'])
+    laser_current=int(ser_sensor.read(18)[8:13].decode('ascii'))
+
+    ser_sensor.close()
+  
+    sleep(0.1)
+  
+#   read temperature
+    try:    
+        ser_temperature.readline() #required to flush the buffer of the arduino since reset of arduino is disabled
+        temperature=float(ser_temperature.readline().decode('utf-8'))
+    except UnicodeDecodeError: #handle error correctly
+        temperature=source.data['temperature'][-1]#nan
+        print('Error raised!')
+    ser_temperature.close()
+    
+#    photo_current=1
+#    laser_current=1
+#    temperature=1
+    return photo_current, laser_current, temperature
 
 #create function to switch laser on and off
 def laser_change(attr, old, new):
     ports=comports()
     for port in ports:
-        if str(port[1])==port_name:
+        if str(port[1])==portname_sensor:
             ser = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
     ser.write(commands[opt2cmd[radio_button_group.active]])
     ser.close()
@@ -104,7 +126,7 @@ def laser_power(attr, old, new):
     command_str = str.encode(command_str)
     ports=comports()
     for port in ports:
-        if str(port[1])==port_name:
+        if str(port[1])==portname_sensor:
             ser = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
     ser.write(command_str)
     ser.close()
@@ -116,11 +138,11 @@ def calc_crc16modbus(check_str):
 #create periodic function
 def update():
     dt = time() - start_time
-    photo_current, laser_current = read_value()
+    photo_current, laser_current, temperature = read_value()
     if dropdown.value=='temperature':
-        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[25], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[25])
+        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[temperature], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[temperature])
     elif dropdown.value=='laser_current':
-        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[25], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[laser_current])
+        new_data=dict(time=[dt], photo_current=[photo_current], laser_current= [laser_current], temperature=[temperature], date=[datetime.strftime(datetime.now(tz=timezone('Europe/Berlin')),'%d. %b %y %H:%M:%S')], selected_data=[laser_current])
     source.stream(new_data)#,rollover=400) #how many glyphs/circles are kept in plot
     
     #update new data in csv
@@ -136,17 +158,17 @@ def update():
 def update_plot(attr, old, new): 
     #change yaxis label and reset data
     if dropdown.value=='laser_current':
-        f_laser.yaxis.axis_label='Laser Current'
+        f_aux.yaxis.axis_label='Laser Current'
         source.data['selected_data']= source.data['laser_current'][:]
     elif dropdown.value=='temperature':
-        f_laser.yaxis.axis_label='Temp. in (\u2103)'
+        f_aux.yaxis.axis_label='Temp. in (\u2103)'
         source.data['selected_data']= source.data['temperature'][:]
 
 #create glyphs
 #f.circle(x='time', y='photo_current', color='firebrick', line_color=None, size=8, fill_alpha=0.4, source=source)
-f_photo.circle(x='time', y='photo_current', size=10, line_color='gray', fill_color='gray', line_alpha=1, fill_alpha=0.3, source=source)
+f_photo.circle(x='time', y='photo_current', size=10, line_color='gray', fill_color='gray', line_alpha=0.8, fill_alpha=0.3, source=source)
 
-f_laser.circle(x='time', y='selected_data', size=10, line_color='firebrick', fill_color='firebrick', line_alpha=1, fill_alpha=0.3, source=source)
+f_aux.circle(x='time', y='selected_data', size=10, line_color='firebrick', fill_color='firebrick', line_alpha=0.8, fill_alpha=0.3, source=source)
 
 #Style the plot area
 f_photo.plot_width = 900
@@ -154,10 +176,10 @@ f_photo.plot_height = 400
 f_photo.background_fill_color=None
 f_photo.border_fill_color=None
 
-f_laser.plot_width = 900
-f_laser.plot_height = 200
-f_laser.background_fill_color=None
-f_laser.border_fill_color=None
+f_aux.plot_width = 900
+f_aux.plot_height = 200
+f_aux.background_fill_color=None
+f_aux.border_fill_color=None
 
 #Style the axes
 f_photo.axis.minor_tick_line_color='black'
@@ -172,18 +194,18 @@ f_photo.axis.major_label_text_font = 'helvetica'
 f_photo.axis.major_label_text_font_size = '10pt'
 f_photo.axis.major_label_text_font_style = 'normal'
 
-f_laser.axis.minor_tick_line_color='black'
-f_laser.axis.minor_tick_in=-6
-f_laser.xaxis.axis_label='Time in (s)'
-f_laser.yaxis.axis_label='Temp. in (\u2103)'
-f_laser.axis.axis_label_text_color=(0.7,0.7,0.7)
-f_laser.axis.major_label_text_color=(0.7,0.7,0.7)
-f_laser.axis.axis_label_text_font = 'helvetica'
-f_laser.axis.axis_label_text_font_size = '16pt'
-f_laser.axis.axis_label_text_font_style = 'normal'
-f_laser.axis.major_label_text_font = 'helvetica'
-f_laser.axis.major_label_text_font_size = '10pt'
-f_laser.axis.major_label_text_font_style = 'normal'
+f_aux.axis.minor_tick_line_color='black'
+f_aux.axis.minor_tick_in=-6
+f_aux.xaxis.axis_label='Time in (s)'
+f_aux.yaxis.axis_label='Temp. in (\u2103)'
+f_aux.axis.axis_label_text_color=(0.7,0.7,0.7)
+f_aux.axis.major_label_text_color=(0.7,0.7,0.7)
+f_aux.axis.axis_label_text_font = 'helvetica'
+f_aux.axis.axis_label_text_font_size = '16pt'
+f_aux.axis.axis_label_text_font_style = 'normal'
+f_aux.axis.major_label_text_font = 'helvetica'
+f_aux.axis.major_label_text_font_size = '10pt'
+f_aux.axis.major_label_text_font_style = 'normal'
 
 #Style the title
 f_photo.title.text='Hydrogen Control'
@@ -197,9 +219,9 @@ f_photo.grid.grid_line_color=(1,1,1)
 f_photo.grid.grid_line_alpha=0.3
 f_photo.grid.grid_line_dash=[5,3]
 
-f_laser.grid.grid_line_color=(1,1,1)
-f_laser.grid.grid_line_alpha=0.3
-f_laser.grid.grid_line_dash=[5,3]
+f_aux.grid.grid_line_color=(1,1,1)
+f_aux.grid.grid_line_alpha=0.3
+f_aux.grid.grid_line_dash=[5,3]
 
 #add widgets (radio button group)
 options=['Laser on', 'Laser off']
@@ -251,6 +273,6 @@ dropdown = Dropdown(label="Select data", button_type="danger", menu=menu, value=
 dropdown.on_change('value',update_plot)
 
 #add figure to curdoc and configure callback
-lay_out=layout([[radio_button_group, slider],[f_photo],[f_laser],[button, dropdown]])
+lay_out=layout([[radio_button_group, slider], [f_photo], [f_aux], [dropdown, button]])
 curdoc().add_root(lay_out)
 curdoc().add_periodic_callback(update,1000) #updates each 1000ms
