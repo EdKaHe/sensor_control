@@ -20,6 +20,7 @@ from PyCRC.CRC16 import CRC16
 import paramiko
 import pandas as pd
 from numpy import nan
+from multiprocessing.pool import ThreadPool
 
 #bokeh serve --allow-websocket-origin=localhost:5000 sensor_control.py
 
@@ -31,7 +32,7 @@ source = ColumnDataSource(dict(time=[], photo_current=[], laser_current=[], temp
 
 #define portnames
 portname_sensor = 'USB Serial Port (COM3)'
-portname_temperature='USB-SERIAL CH340 (COM5)'
+portname_temperature='USB-SERIAL CH340 (COM4)'
 
 #host credentials
 credentials=pd.read_json(r'./credentials.JSON', typ='series')
@@ -71,36 +72,51 @@ f_aux.toolbar.logo = None
 
 #initialize port and read the photocurrent
 def read_value():
-#   open ports
-    ports=comports()
-    for port in ports:
-        if str(port[1])==portname_sensor:
-            ser_sensor = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
-        if str(port[1]==portname_temperature):
-            ser_temperature = serial.Serial(str(port[0]),baudrate=115200,timeout=500)
+#   read sensor data
+    def read_sensor():
+        ports=comports()
+        for port in ports:
+            if str(port[1])==portname_sensor:
+                ser_sensor = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
+        #read photo current
+        ser_sensor.write(commands['get photo current'])
+        photo_current=int(ser_sensor.read(18)[8:13].decode('ascii')) #8:13 contains value
+        sleep(0.2)
+        
+        #read laser current
+        ser_sensor.write(commands['get laser current'])
+        laser_current=int(ser_sensor.read(18)[8:13].decode('ascii'))
+        sleep(0.2)
+        
+        ser_sensor.close()
+        return photo_current, laser_current
 
-#   read photo_current        
-    ser_sensor.write(commands['get photo current'])
-    photo_current=int(ser_sensor.read(18)[8:13].decode('ascii')) #8:13 contains value
-
-    sleep(0.1)
-    
-#   read laser current
-    ser_sensor.write(commands['get laser current'])
-    laser_current=int(ser_sensor.read(18)[8:13].decode('ascii'))
-
-    ser_sensor.close()
-  
-    sleep(0.1)
-  
 #   read temperature
-    try:    
-        ser_temperature.readline() #required to flush the buffer of the arduino since reset of arduino is disabled
-        temperature=float(ser_temperature.readline().decode('utf-8'))
-    except UnicodeDecodeError: #handle error correctly
-        temperature=source.data['temperature'][-1]#nan
-        print('Error raised!')
-    ser_temperature.close()
+    def read_temperature():
+        ports=comports()
+        for port in ports:
+            if str(port[1])==portname_temperature:
+                ser_temperature = serial.Serial(str(port[0]),baudrate=115200,timeout=200)
+        try:    
+            ser_temperature.readline() #required to flush the buffer of the arduino since reset of arduino is disabled
+            sleep(0.1)
+            temperature=float(ser_temperature.readline().decode('utf-8'))
+            sleep(0.2)
+        except UnicodeDecodeError: #handle error correctly
+            temperature=source.data['temperature'][-1]#nan
+            print('Error raised!')
+            
+        ser_temperature.close()
+        return temperature
+    
+    #initialize multithreading processes
+    pool = ThreadPool(processes=2)
+    async_sensor=pool.apply_async(read_sensor)
+    async_temperature=pool.apply_async(read_temperature)
+    
+    #get return values from multithreading
+    photo_current, laser_current=async_sensor.get(timeout=100)
+    temperature=async_temperature.get(timeout=100)
     
 #    photo_current=1
 #    laser_current=1
